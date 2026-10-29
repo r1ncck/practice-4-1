@@ -1,44 +1,27 @@
 import './styles.css';
-import { Book } from './task1-types';
+import { AsyncState, Book } from './task1-types';
 import { applyFilters, filterByAuthor, filterByMinYear } from './task3-filters';
 import { createBookFromForm } from "./task4-integration";
 import { filterByTitle, sortBooks } from './task5-utils';
 import { BookCatalog } from './task6-classes';
 import { Wishlist } from './task7-wishlist';
+import { fetchBooks, saveBooks } from './mock-api';
 
 // ============================================================
 // ИСХОДНОЕ СОСТОЯНИЕ
 // ============================================================
-let catalog = new BookCatalog('main', [
-  { id: '1', title: 'TypeScript Guide', authors: ['John Doe'], year: 2024 },
-  { id: '2', title: 'JavaScript Basics', authors: ['Jane Smith'], year: 2022 },
-]);
+let state: AsyncState<Book[]> = { status: 'loading' };
+let errorMessage = '';
 
+let catalog = new BookCatalog('main', []);
 let wishlist = new Wishlist();
-
-// Загрузка из localStorage (в практике 4-1 переедет в mock-api.ts)
-const savedCatalog = localStorage.getItem('catalog');
-if (savedCatalog) {
-  const parsed = JSON.parse(savedCatalog);
-  catalog = new BookCatalog(parsed.id, parsed.books);
-}
 
 const savedWishlist = localStorage.getItem('wishlist');
 if (savedWishlist) {
   wishlist = new Wishlist(JSON.parse(savedWishlist));
 }
 
-// ============================================================
-// СОХРАНЕНИЕ (в практике 4-1 переедет в mock-api.ts)
-// ============================================================
-function saveCatalog() {
-  localStorage.setItem('catalog', JSON.stringify({
-    id: catalog.id,
-    books: catalog.getBooks()
-  }));
-}
-
-function saveWishlist() {
+function saveWishlist(): void {
   localStorage.setItem('wishlist', JSON.stringify(wishlist.getFavoriteIds()));
 }
 
@@ -51,7 +34,7 @@ const form = document.querySelector('#bookForm') as HTMLFormElement;
 const filterBtn = document.querySelector('#applyFilters') as HTMLButtonElement;
 const authorInput = document.querySelector('#filterAuthor') as HTMLInputElement;
 const yearInput = document.querySelector('#filterYear') as HTMLInputElement;
-const errorMessage = document.querySelector('#errorMessage') as HTMLDivElement;
+const errorMessageEl = document.querySelector('#errorMessage') as HTMLDivElement;
 const searchInput = document.querySelector('#searchInput') as HTMLInputElement;
 const sortBySelect = document.querySelector('#sortBy') as HTMLSelectElement;
 
@@ -75,12 +58,22 @@ function createBookCard(book: Book): HTMLDivElement {
   // Кнопка «Удалить»
   const deleteBtn = document.createElement('button');
   deleteBtn.textContent = 'Удалить';
-  deleteBtn.addEventListener('click', () => {
-    catalog.removeBook(book.id);
-    saveCatalog();
-    updateView();
+  deleteBtn.addEventListener('click', async () => {
+    if (state.status !== 'success') return;
+
+    const newBooksArray = state.data.filter(b => b.id !== book.id);
+    try {
+      await saveBooks(newBooksArray);
+      state = { status: 'success', data: newBooksArray };
+      render ();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Неизвестная ошибка';
+    render();
+    setTimeout(() => { errorMessage = ''; render(); }, 3000);
+    }
   });
-  card.append(deleteBtn);
+    card.append(deleteBtn);
+
 
   // Кнопка «Избранное» 
   const favBtn = document.createElement('button');
@@ -88,7 +81,7 @@ function createBookCard(book: Book): HTMLDivElement {
   favBtn.addEventListener('click', () => {
     wishlist.toggle(book.id);
     saveWishlist();
-    updateView();
+    render();
   });
   card.append(favBtn);
 
@@ -126,10 +119,12 @@ function renderWishlist() {
 }
 
 // Единая функция обновления вида
-function updateView() {
+function updateView(books: Book []) {
+  catalog = new BookCatalog('main', books);
+
   const filters: ((book: Book) => boolean)[] = [];
   if (authorInput.value.trim()) filters.push(filterByAuthor(authorInput.value.trim()));
-  if (yearInput.value) filters.push(filterByMinYear(parseInt(yearInput.value, 10)));
+  if (yearInput.value.trim()) filters.push(filterByMinYear(parseInt(yearInput.value, 10)));
   if (searchInput.value.trim()) filters.push(filterByTitle(searchInput.value.trim()));
 
   const allBooks = catalog.getBooks();
@@ -140,32 +135,95 @@ function updateView() {
   renderWishlist();
 }
 
-// Первичная отрисовка
-updateView();
+function render() {
+  errorMessageEl.textContent = errorMessage;
+
+  switch (state.status) {
+    case 'idle':
+      bookList.innerHTML = '';
+      bookList.textContent = 'Начальный экран';
+      break;
+
+    case 'loading':
+      bookList.innerHTML = '';
+      bookList.textContent = 'Загрузка данных...';
+      break;
+
+    case 'success':
+      updateView(state.data);
+      break;
+
+    case 'error': {
+      bookList.innerHTML = '';
+
+      const errorBlock = document.createElement('div');
+      errorBlock.style.color = 'red';
+
+      const msgEl = document.createElement('p');
+      msgEl.textContent = state.message;
+
+      const retryBtn = document.createElement('button');
+      retryBtn.textContent = 'Повторить попытку';
+      retryBtn.addEventListener('click', () => {
+        initApp();
+      });
+
+      errorBlock.append(msgEl, retryBtn);
+      bookList.append(errorBlock);
+      break;
+    }
+  }
+}
+
+async function initApp() {
+  try {
+    state = { status: 'loading' };
+    render();
+
+    const books = await fetchBooks();
+    state = { status: 'success', data: books };
+  } catch (error) {
+    state = {
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Неизвестная ошибка',
+    };
+  }
+  render();
+}
+
+initApp();
 
 // ============================================================
 // ОБРАБОТЧИК ФОРМЫ
 // ============================================================
-form.addEventListener('submit', (e) => {
+form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  errorMessage.textContent = '';
+  if (state.status !== 'success') return;
+
   try {
     const formData = new FormData(form);
     const newBook = createBookFromForm(formData);
-    catalog.addBook(newBook);
-    saveCatalog();
+    const newBooksArray = [...state.data, newBook];
+
+    await saveBooks(newBooksArray);
+
+    state = { status: 'success', data: newBooksArray };
     form.reset();
-    updateView();
+    render();
   } catch (error) {
-    if (error instanceof Error) {
-      errorMessage.textContent = error.message;
-    }
+    errorMessage = error instanceof Error ? error.message : 'Неизвестная ошибка';
+    render();
+
+    setTimeout(() => {
+      errorMessage = '';
+      render();
+    }, 3000);
   }
 });
 
 // ============================================================
 // ФИЛЬТРЫ И СОРТИРОВКА
 // ============================================================
-filterBtn.addEventListener('click', updateView);
-searchInput.addEventListener('input', updateView);
-sortBySelect.addEventListener('change', updateView);
+filterBtn.addEventListener('click', render);
+searchInput.addEventListener('input', render);
+sortBySelect.addEventListener('change', render);

@@ -14,6 +14,13 @@ export type Catalog = Record<string, Book>;
 
 export type BookFilter = (book: Book) => boolean;
 
+
+export type AsyncState<T> = 
+| { status: "idle" }
+| { status: "loading" }
+| { status: "success"; data: T }
+| { status: "error"; message: string };
+
 /**
  * Форматирует книгу в строку: "Title (Year) — Authors".
  *
